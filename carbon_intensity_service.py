@@ -7,14 +7,16 @@ import os
 #getCIatTime(), def predict(), loading in init, add types to inputs
 # add a task class - with length
 class CarbonIntensityService:
-    def __init__(self, location, start_date, start_time, deadline, task, slack=0):
+    def __init__(self, location: str):
         self.location = location
-        self.start_date = start_date
-        self.deadline = deadline
-        self.slack = slack
-        self.task = task
         self.csv_path = f"traces/{self.location}.csv"
-        self.start_time = start_time
+
+        #load carbon trace
+        csv_path = f"traces/{self.location}.csv"
+        carbon_t = pd.read_csv(csv_path)
+
+        #extract carbon intensity values and their date and time values
+        self.carbon_trace = carbon_t[["datetime", "carbon_intensity_avg"]]
 
     def load_carbon_trace(self):
         csv_path = f"traces/{self.location}.csv"
@@ -47,10 +49,10 @@ class CarbonIntensityService:
         print("printing tp replicas ", tp["replicas"])
         return tp["replicas"]
 
-    # def get_carbon_intensity(self):
-    #     """Returns the filtered carbon intensity trace."""
-    #     return self.carbon_trace["carbon_intensity_avg"].values / 1000  # Convert to kW
+    def get_carbon_intensity_values(self):
+        """Returns the filtered carbon intensity trace."""
+        return self.carbon_trace["carbon_intensity_avg"].values / 1000  # Convert to kW
 
-    # def get_carbon_at_time(self, time_slot):
-    #     """Returns the carbon intensity for a specific time slot."""
-    #     return self.carbon_trace["carbon_intensity_avg"].iloc[time_slot] / 1000  # Convert to kW
+    def get_carbon_intensity_at_time(self, time_slot):
+        """Returns the carbon intensity for a specific time slot."""
+        return self.carbon_t["carbon_intensity_avg"].iloc[time_slot] / 1000  # Convert to kW

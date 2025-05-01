@@ -1,21 +1,52 @@
 from carbon_advisor_interface import CarbonAdvisorInterface
+from carbon_intensity_service import CarbonIntensityService
+from task_profile import TaskProfile
+import argparse
+from datetime import datetime
+from datetime import timedelta
+import pandas as pd
 
 #carbon_scaler - change name - add init
 #add to task class - marginal capacity
 class CarbonAdvisor(CarbonAdvisorInterface):
+    def __init__(
+        self,
+        carbon_intensity_service: CarbonIntensityService,
+        task_profile: TaskProfile,
+        start_date_time: datetime,
+        deadline: int,
+        slack: int,
+        max_nodes: int = 8
+    ) -> None:
+        super().__init__(carbon_intensity_service, task_profile, start_date_time, deadline, slack, max_nodes)
+
+    
+    def get_interval_carbon_intensity(self):
+        carbon_t = self.carbon_intensity_service.carbon_trace
+        start_date_time = self.start_date_time
+        end_datetime = start_date_time + timedelta(hours=self.deadline + self.slack)
+
+        carbon_t["datetime"] = pd.to_datetime(carbon_t["datetime"])
+
+        #extract carbon intensity values at specified date and times
+        carbon_t = carbon_t[
+    (carbon_t["datetime"] >= start_date_time) &
+    (carbon_t["datetime"] <= end_datetime)
+]
+        return carbon_t["carbon_intensity_avg"].values / 1000
 
     #get schedule of number of nodes to assign to each time slot
     def compute_schedule(self):
         # carbon_t = self.carbon_trace["carbon_intensity_avg"].values
-        carbon_t = self.carbon_trace
-        marginal_capacity = self.load_marginal_capacity()
+        carbon_t = self.get_interval_carbon_intensity()
+        marginal_capacity = self.task_profile_obj.load_marginal_capacity()
         print("printing carbon t ", carbon_t)
-        print("printing task profile ", self.task_profile)
+        print("printing task profile ", self.task_profile_obj)
         marginal_capacity_carbon = []
         # max_nodes = len(self.task_profile)  #maximum available nodes in the scale profile
-        max_nodes = self.num_workers
+        max_nodes = self.max_nodes
         print("printing max nodes ", max_nodes)
-        for i in range(0, len(self.carbon_trace)):
+        for i in range(0, len(carbon_t)):
             for j in range(1, max_nodes + 1):
                 value = marginal_capacity[j]["throughput"] / \
                     (marginal_capacity[j]["power"]
@@ -33,8 +64,7 @@ class CarbonAdvisor(CarbonAdvisorInterface):
         marginal_capacity_carbon, key=lambda x: x["value"], reverse=True)
         print("printing marginal capacity carbon ", marginal_capacity_carbon)
 
-        #total samples that can be processed by 1 node given task length in seconds.
-        total_samples = int(self.task_length * marginal_capacity[1]["throughput"] * 3600)
+        total_samples = self.task_profile_obj.get_total_samples()
         
         task_schedule: dict[int, int] = {}
 
@@ -44,7 +74,7 @@ class CarbonAdvisor(CarbonAdvisorInterface):
                 print("printing done ", done)
                 print("printing total samples ", total_samples)
                 selection = marginal_capacity_carbon[i]
-                done += self.task_profile[selection["nodes"]]   ["throughput"] * 3600   #increase the number of samples processed
+                done += self.task_profile_obj.task_profile[selection["nodes"]]   ["throughput"] * 3600   #increase the number of samples processed
                 task_schedule[selection["timeslot"]]= selection["nodes"]    #assign number of nodes at timeslot
                 del marginal_capacity_carbon[i]
                 break
@@ -52,24 +82,11 @@ class CarbonAdvisor(CarbonAdvisorInterface):
         self.task_schedule = task_schedule
         return task_schedule
     
-    #load marginal power and throughput values to be used for task scheduling
-    def load_marginal_capacity(self):
-        marginal_model = {}
-        model = self.task_profile
-        marginal_model[1] = {"throughput": model[1]["throughput"],
-                                "power": model[1]["power"]
-                                }
-        for i in range(2, 9):
-            marginal_model[i] = {"throughput": model[i]["throughput"] - model[i - 1]["throughput"],
-                                "power": model[i]["power"] - model[i - 1]["power"]}
-        print("printing marginal model ", marginal_model)                        
-        return marginal_model
-    
     def get_scale_at_a_time(self, task_schedule):
         # Extract the number of worker nodes assigned at each time step. one time step = hour
         total_work = 0
         # total_samples = int(self.task_length * self.task_profile[1]["throughput"] * 3600)  # job unable to finish. 
-        total_samples = int(self.task_length * self.task_profile[1]["throughput"])
+        total_samples = int(self.task_profile_obj.task_length * self.task_profile[1]["throughput"])
     
         print(f"Required Total Work (total_samples): {total_samples}")
 
@@ -101,12 +118,12 @@ class CarbonAdvisor(CarbonAdvisorInterface):
 
     def get_compute_time(self):
         print("in get compute time")
-        marginal_capacity = self.load_marginal_capacity()
+        marginal_capacity = self.task_profile_obj.load_marginal_capacity()
         task_throughput = 0
         for timeslot, nodes in self.task_schedule.items():
             task_throughput += marginal_capacity[nodes]["throughput"]
         
-        total_samples = int(self.task_length * marginal_capacity[1]["throughput"] * 3600)
+        total_samples = int(self.task_profile_obj.task_length * marginal_capacity[1]["throughput"] * 3600)
         total_compute_time = total_samples/task_throughput
         return total_compute_time/3600
     
@@ -133,20 +150,63 @@ class CarbonAdvisor(CarbonAdvisorInterface):
             total_emissions += emissions_t
         return total_emissions
 
-scaler = CarbonAdvisor(deadline=50, slack=0, num_workers=8, task_length=24, location='AU-SA', task='resnet18', start_time= 0, start_date='2021-03-22', start_hour=8)
-scaler.compute_schedule()
-print("printing compute time", scaler.get_compute_time())
-# scaler.get_total_emissions()
+def main():
+    parser = argparse.ArgumentParser(
+            description="Carbon Advisor",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("-t",
+                        "--task",
+                        type=str,
+                        default="tinyimagenet-resnet18-weak",
+                        help="Workload Yaml/CSV file")
 
-# ---------- Roshini 
+    parser.add_argument("-l",
+                        "--task_length",
+                        type=float,
+                        default=24,
+                        help="Task Length")
 
-# scaler1 = CarbonScalerAlgo(deadline=50, slack=8, num_workers=8, task_length=24, location='AU-SA', task='densenet121', start_date='2021-03-22', start_hour=8)
-# result1 = scaler1.analyse_schedule()
-# print(result1)
-# scaler2 = CarbonScalerAlgo(deadline=50, slack=8, num_workers=8, task_length=24, location='SE-SE1', task='resnet18', start_date='2020-01-01', start_hour=12)
-# scaler.carbon_scaler_algo()
-# result2 = scaler2.analyse_schedule()
+    parser.add_argument("-c",
+                        "--location",
+                        type=str,
+                        default="CA-ON",
+                        help="Carbon Trace CSV")
 
+    parser.add_argument("-d",
+                        "--deadline",
+                        type=int,
+                        default=24,
+                        help="Deadline Factor")
+    parser.add_argument("-s",
+                        "--slack",
+                        type=int,
+                        default=0,
+                        help="Slack")
+    parser.add_argument("-n",
+                        "--num_workers",
+                        type=int,
+                        default=8,
+                        help="Cluster Size")
+    parser.add_argument("-sd",
+                        "--start_date_time",
+                        type=datetime.fromisoformat,
+                        default=datetime.now(),
+                        help="Start Hour")
+    
+    args = parser.parse_args()
 
-# print(result2)
-# # print(results)
+    carbon_intensity_service = CarbonIntensityService(location=args.location)
+    task_profile_obj = TaskProfile(task = args.task, task_length=args.task_length)
+    task_profile_obj.load_scale_profile()
+    scaler = CarbonAdvisor(
+        carbon_intensity_service = carbon_intensity_service,
+        task_profile = task_profile_obj,
+        start_date_time = args.start_date_time,
+        deadline=args.deadline,
+        slack = args.slack,
+        max_nodes=args.num_workers
+    )
+
+    scaler.compute_schedule()
+if __name__ == "__main__":
+    main()
